@@ -1,0 +1,34 @@
+key: htmlSecurity
+title: Security
+description: Filter and strips potentially dangerous content
+author: requarks.io
+icon: mdi-fire
+enabledDefault: true
+dependsOn: htmlCore
+step: post
+order: 99999
+props:
+  safeHTML:
+    type: Boolean
+    title: Sanitize HTML
+    default: true
+    hint: Sanitize HTML from unsafe attributes and tags that could lead to XSS attacks
+    order: 1
+  allowDrawIoUnsafe:
+    type: Boolean
+    title: Allow Draw.io Unsafe Elements
+    default: true
+    hint: Draw.io diagrams may introduce some elements that are usually filtered. Turning off this option may cause some diagrams to be completely removed during the sanitization process.
+    order: 2
+  allowIFrames:
+    type: Boolean
+    title: Allow iframes
+    default: false
+    hint: iframes will not be stripped if enabled. (Not recommended)
+    order: 3
+  allowUnsafeHTML:
+    type: Boolean
+    title: Allow Unsafe HTML (script, style)
+    default: false
+    hint: Allow <script> and <style> tags to pass through sanitization. Required for HTML slides (reveal.js, etc.) and embedded interactive content. Use with caution — only enable on trusted content.
+    order: 4
