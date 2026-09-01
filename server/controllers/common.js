@@ -511,31 +511,47 @@ router.get('/*', async (req, res, next) => {
         // NOTE: <script> tags are KEPT in page.render — page.vue executes them
         // sequentially AFTER v-html renders, so .reveal etc. exist by then.
         if (page.render && page.editorKey === 'code') {
-          // -> Strip full HTML document wrappers (<!DOCTYPE>, <html>, <head>, <body>)
-          // so the inner content renders cleanly inside Wiki.js's own HTML shell.
-          const fullDocMatch = page.render.match(/^\s*(?:<!DOCTYPE[^>]*>[\s\S]*?)?<html\b[^>]*>([\s\S]*)<\/html>\s*$/i)
+          // -> Handle full HTML documents (<!DOCTYPE html>...<html>...<head>...<body>...)
+          // page.render (stored rendered content) has already lost <head> content due to
+          // DOMPurify, so we extract from page.content (raw source) instead.
+          const rawContent = page.content || page.render
+          const fullDocMatch = rawContent.match(/^\s*(?:<!DOCTYPE[^>]*>[\s\S]*?)?<html\b[^>]*>([\s\S]*)<\/html>\s*$/i)
           if (fullDocMatch) {
             const inner = fullDocMatch[1]
-            // Extract <head> content (styles, scripts, meta) → move to injectCode
+            // Extract <head> content (styles, scripts, links) → injectCode
             const headMatch = inner.match(/<head\b[^>]*>([\s\S]*?)<\/head>/i)
             if (headMatch) {
               const headContent = headMatch[1]
-              // Extract <style> tags from head
               headContent.replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gi, (_, css) => {
                 injectCode.css = `${injectCode.css}\n${css}`
               })
-              // Extract <script> tags from head → injectCode.head
               headContent.replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (_, attrs, code) => {
                 injectCode.head = `${injectCode.head}\n<script${attrs}>${code}</script>`
               })
-              // Extract <link rel="stylesheet"> → injectCode.head
               headContent.replace(/<link\b[^>]*rel=["']stylesheet["'][^>]*>/gi, (match) => {
                 injectCode.head = `${injectCode.head}\n${match}`
               })
             }
-            // Extract <body> content
+            // Use <body> content as page.render (stripping HTML shell)
             const bodyMatch = inner.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i)
-            page.render = bodyMatch ? bodyMatch[1] : inner.replace(/<\/?head\b[\s\S]*?>/gi, '').replace(/<\/?body\b[^>]*>/gi, '')
+            if (bodyMatch) {
+              page.render = bodyMatch[1]
+            }
+            // Also extract <style>, <script>, <link> from body content → injectCode
+            // (these run in page context via page.vue's sequential script executor)
+            page.render = page.render.replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gi, (_, css) => {
+              injectCode.css = `${injectCode.css}\n${css}`
+              return ''
+            })
+            page.render = page.render.replace(/<link\b[^>]*rel=["']stylesheet["'][^>]*>/gi, (match) => {
+              injectCode.head = `${injectCode.head}\n${match}`
+              return ''
+            })
+            // <script> tags with src → injectCode.head (loaded early)
+            page.render = page.render.replace(/<script\b([^>]*\bsrc=["'][^"']*["'][^>]*)>\s*<\/script>/gi, (match) => {
+              injectCode.head = `${injectCode.head}\n${match}`
+              return ''
+            })
           }
           const extractedStyles = []
 
