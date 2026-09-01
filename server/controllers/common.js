@@ -513,8 +513,12 @@ router.get('/*', async (req, res, next) => {
         if (page.render && page.editorKey === 'code') {
           // -> Handle full HTML documents (<!DOCTYPE html>...<html>...<head>...<body>...)
           // page.render (stored rendered content) has already lost <head> content due to
-          // DOMPurify, so we extract from page.content (raw source) instead.
-          const rawContent = page.content || page.render
+          // DOMPurify. We need the raw source which may not be in cache (cache omits content).
+          let rawContent = page.content
+          if (!rawContent) {
+            const rawRow = await WIKI.models.knex.raw('SELECT content FROM pages WHERE id = ?', [page.id])
+            rawContent = rawRow.rows[0]?.content
+          }
           const fullDocMatch = rawContent.match(/^\s*(?:<!DOCTYPE[^>]*>[\s\S]*?)?<html\b[^>]*>([\s\S]*)<\/html>\s*$/i)
           if (fullDocMatch) {
             const inner = fullDocMatch[1]
