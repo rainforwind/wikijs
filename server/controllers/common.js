@@ -412,6 +412,27 @@ router.get('/_userav/:uid', async (req, res, next) => {
 })
 
 /**
+ * Download raw HTML source of a page
+ */
+router.get('/_raw/:locale/*', async (req, res, next) => {
+  const pageArgs = pageHelper.parsePath('/' + req.params[0], { stripExt: false })
+  try {
+    const rawRow = await WIKI.models.knex.raw(
+      'SELECT content, title, "contentType" FROM pages WHERE path = ? AND "localeCode" = ?',
+      [pageArgs.path, req.params.locale]
+    )
+    const row = rawRow.rows[0]
+    if (!row) return res.status(404).send('Page not found')
+    const filename = row.title.replace(/[^\w\u4e00-\u9fff\-]/g, '_') + (row.contentType === 'html' ? '.html' : '.md')
+    res.setHeader('Content-Type', 'application/octet-stream')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.send(row.content)
+  } catch (err) {
+    next(err)
+  }
+})
+
+/**
  * View document / asset
  */
 router.get('/*', async (req, res, next) => {
@@ -607,6 +628,12 @@ router.get('/*', async (req, res, next) => {
             injectCode.css = `${injectCode.css}\n#fs-toggle-btn { position: fixed !important; bottom: 30px !important; right: 30px !important; z-index: 999999 !important; background: #1976d2 !important; color: #fff !important; border: none !important; border-radius: 24px !important; padding: 12px 24px !important; cursor: pointer !important; font-size: 16px !important; box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important; display: flex !important; align-items: center !important; gap: 8px !important; }\n.standalone-fullscreen { position: fixed !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; z-index: 99999 !important; overflow: hidden !important; }\n.standalone-fullscreen .v-toolbar, .standalone-fullscreen header, .standalone-fullscreen nav-header, .standalone-fullscreen .v-navigation-drawer, .standalone-fullscreen .page-header-section, .standalone-fullscreen .v-divider, .standalone-fullscreen .page-edit-fab, .standalone-fullscreen .page-edit-shortcuts, .standalone-fullscreen .nav-footer, .standalone-fullscreen .page-toc-card, .standalone-fullscreen .page-tags-card, .standalone-fullscreen .page-comments-card, .standalone-fullscreen .page-author-card, .standalone-fullscreen .page-shortcuts-card, .standalone-fullscreen .page-col-sd, .standalone-fullscreen .comments-container, .standalone-fullscreen #discussion, .standalone-fullscreen .v-footer { display: none !important; }\n.standalone-fullscreen .reveal-viewport, .standalone-fullscreen .reveal { position: fixed !important; top: 0 !important; left: 0 !important; height: 100vh !important; width: 100vw !important; overflow: hidden !important; }\n.standalone-fullscreen .container, .standalone-fullscreen .container--fluid { width: 100% !important; max-width: 100% !important; padding: 0 !important; margin: 0 !important; }`
             injectCode.body = `${injectCode.body}\n<button id="fs-toggle-btn" onclick="var el=document.querySelector(\x27.v-application\x27);if(!el)return;var on=!el.classList.contains(\x27standalone-fullscreen\x27);if(on){el.classList.add(\x27standalone-fullscreen\x27);}else{el.classList.remove(\x27standalone-fullscreen\x27);}if(typeof Reveal!==\x27undefined\x27&&Reveal.layout){setTimeout(function(){Reveal.layout()},50);}this.innerHTML=on?\x27&times; Exit\x27:\x27&#9654; Play\x27;" title="Toggle Fullscreen" style="display:flex">&#9654; Play</button>\n<script>\n(function(){\n  var BG='#191919',FG='#fff',timer;\n  function paint(){\n    var el;\n    el=document.querySelector('.reveal-viewport');if(el){el.style.setProperty('background-color',BG,'important');}\n    el=document.querySelector('.reveal');if(el){el.style.setProperty('background-color',BG,'important');}\n    document.querySelectorAll('.reveal .slides section, .slide').forEach(function(s){\n      s.style.setProperty('background-color',BG,'important');\n      s.style.setProperty('color',FG,'important');\n    });\n  }\n  paint();\n  timer=setInterval(paint,300);\n  setTimeout(function(){clearInterval(timer)},5000);\n})();\n</script>`
           }
+        }
+        // -> Docs domain: download button for code editor pages (raw HTML/MD)
+        if (!isPubDomain && page.editorKey === 'code' && page.localeCode && page.path) {
+          const dlUrl = `/_raw/${page.localeCode}/${page.path}`
+          injectCode.css = `${injectCode.css}\n#dl-raw-btn { position: fixed !important; top: 80px !important; right: 20px !important; z-index: 999999 !important; background: #333 !important; color: #fff !important; border: none !important; border-radius: 6px !important; padding: 8px 16px !important; cursor: pointer !important; font-size: 13px !important; box-shadow: 0 2px 6px rgba(0,0,0,0.3) !important; display: flex !important; align-items: center !important; gap: 6px !important; text-decoration: none !important; }\n#dl-raw-btn:hover { background: #555 !important; }`
+          injectCode.body = `${injectCode.body}\n<a id="dl-raw-btn" href="${dlUrl}" title="Download source file">&#8615; Source</a>`
         }
         if (req.query.legacy || (req.get('user-agent') && req.get('user-agent').indexOf('Trident') >= 0)) {
           // -> Convert page TOC
