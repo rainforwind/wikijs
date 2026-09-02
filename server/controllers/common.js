@@ -533,67 +533,37 @@ router.get('/*', async (req, res, next) => {
         // sequentially AFTER v-html renders, so .reveal etc. exist by then.
         if (page.render && page.editorKey === 'code') {
           // -> Handle full HTML documents (<!DOCTYPE html>...<html>...<head>...<body>...)
-          // page.render (stored rendered content) has already lost <head> content due to
-          // DOMPurify. We need the raw source which may not be in cache (cache omits content).
+          // For complete HTML documents, render in an iframe for 100% style isolation.
+          // This prevents Vuetify/Wiki.js global CSS from polluting the page's styles.
           let rawContent = page.content
           if (!rawContent) {
             const rawRow = await WIKI.models.knex.raw('SELECT content FROM pages WHERE id = ?', [page.id])
             rawContent = rawRow.rows[0]?.content
           }
-          const fullDocMatch = rawContent.match(/^\s*(?:<!DOCTYPE[^>]*>[\s\S]*?)?<html\b[^>]*>([\s\S]*)<\/html>\s*$/i)
+          const fullDocMatch = rawContent && rawContent.match(/^\s*(?:<!DOCTYPE[^>]*>[\s\S]*?)?<html\b[^>]*>([\s\S]*)<\/html>\s*$/i)
           if (fullDocMatch) {
-            const inner = fullDocMatch[1]
-            // Extract <head> content (styles, scripts, links) → injectCode
-            const headMatch = inner.match(/<head\b[^>]*>([\s\S]*?)<\/head>/i)
-            if (headMatch) {
-              const headContent = headMatch[1]
-              headContent.replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gi, (_, css) => {
-                injectCode.css = `${injectCode.css}\n${css}`
-              })
-              headContent.replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (_, attrs, code) => {
-                injectCode.head = `${injectCode.head}\n<script${attrs}>${code}</script>`
-              })
-              headContent.replace(/<link\b[^>]*rel=["']stylesheet["'][^>]*>/gi, (match) => {
-                injectCode.head = `${injectCode.head}\n${match}`
-              })
-            }
-            // Use <body> content as page.render (stripping HTML shell)
-            const bodyMatch = inner.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i)
-            if (bodyMatch) {
-              page.render = bodyMatch[1]
-            }
-            // Also extract <style>, <script>, <link> from body content → injectCode
-            // (these run in page context via page.vue's sequential script executor)
-            page.render = page.render.replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gi, (_, css) => {
-              injectCode.css = `${injectCode.css}\n${css}`
-              return ''
-            })
-            page.render = page.render.replace(/<link\b[^>]*rel=["']stylesheet["'][^>]*>/gi, (match) => {
-              injectCode.head = `${injectCode.head}\n${match}`
-              return ''
-            })
-            // <script> tags with src → injectCode.head (loaded early)
-            page.render = page.render.replace(/<script\b([^>]*\bsrc=["'][^"']*["'][^>]*)>\s*<\/script>/gi, (match) => {
-              injectCode.head = `${injectCode.head}\n${match}`
-              return ''
-            })
+            // Encode the entire original HTML document for iframe srcdoc
+            const iframeSrc = rawContent
+              .replace(/&/g, '&amp;')
+              .replace(/'/g, '&#39;')
+              .replace(/"/g, '&quot;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+            page.render = `<iframe id="raw-page-frame" srcdoc="${iframeSrc}" style="position:fixed;top:0;left:0;width:100vw;height:100vh;border:none;margin:0;padding:0;z-index:1;" allowfullscreen></iframe>`
+            // Also clear injectCode.css/head extraction for full docs (iframe handles its own styles)
           }
-          const extractedStyles = []
-
-          // Extract <style> tags only
-          page.render = page.render.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, (match) => {
-            extractedStyles.push(match)
-            return '<!-- [auto-extracted style] -->'
-          })
-
-          if (extractedStyles.length > 0) {
-            injectCode.css = `${injectCode.css}\n${extractedStyles.map(s => s.replace(/<\/?style[^>]*>/gi, '')).join('\n')}`
+          // For non-full-HTML code pages (inline HTML snippets), extract <style> tags
+          // and add CSS isolation to prevent Vuetify leakage
+          if (!fullDocMatch) {
+            const extractedStyles = []
+            page.render = page.render.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, (match) => {
+              extractedStyles.push(match)
+              return '<!-- [auto-extracted style] -->'
+            })
+            if (extractedStyles.length > 0) {
+              injectCode.css = `${injectCode.css}\n${extractedStyles.map(s => s.replace(/<\/?style[^>]*>/gi, '')).join('\n')}`
+            }
           }
-          // -> CSS isolation: reset Vuetify inherited properties on content container
-          // 'all: initial' on the wrapper div creates an inheritance barrier — children
-          // inherit from this div (initial values) instead of Vuetify's ancestors.
-          // The page's own extracted <style> rules still apply to inner elements.
-          injectCode.css = `${injectCode.css}\n.contents > div { all: initial !important; display: block !important; width: 100% !important; }\n.page-col-content { background: initial !important; border: none !important; box-shadow: none !important; }`
         }
 
                 // -> Load page tags for standalone detection (keep original page.tags for Vue template)
@@ -620,7 +590,7 @@ router.get('/*', async (req, res, next) => {
             const hideRule = chromeSelectors.map(s => '.v-application:not(.standalone-exit) ' + s).join(',\n  ') + ' { display: none !important; }'
             const showRule = chromeSelectors.map(s => '.v-application.standalone-exit ' + s).join(',\n  ') + ' { display: block !important; }'
             const stretch = '\n.container, .container--fluid, .layout, .row, .page-col-content, .contents { padding: 0 !important; margin: 0 !important; max-width: 100% !important; width: 100% !important; }\n.page-col-content { flex: 0 0 100% !important; }'
-            injectCode.css = `${injectCode.css}\n${hideRule}\n${showRule}${stretch}\n.v-application:not(.standalone-exit) .reveal, .v-application:not(.standalone-exit) .page-col-content > div { position: fixed !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; margin: 0 !important; overflow: hidden !important; }\n/* Generic standalone: make page content fill viewport for any slide system */\n.v-application:not(.standalone-exit) .page-col-content { position: fixed !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; padding: 0 !important; margin: 0 !important; overflow: hidden !important; }\n.v-application:not(.standalone-exit) .contents { padding: 0 !important; margin: 0 !important; overflow: hidden !important; height: 100vh !important; }`
+            injectCode.css = `${injectCode.css}\n${hideRule}\n${showRule}${stretch}\n/* iframe for full HTML docs: fullscreen by default, relative when in exit mode */\n#raw-page-frame { position: fixed !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; z-index: 1 !important; }\n.v-application.standalone-exit #raw-page-frame { position: relative !important; width: 100% !important; height: auto !important; min-height: 80vh !important; z-index: auto !important; }\n.v-application:not(.standalone-exit) .reveal, .v-application:not(.standalone-exit) .page-col-content > div { position: fixed !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; margin: 0 !important; overflow: hidden !important; }\n/* Generic standalone: make page content fill viewport for any slide system */\n.v-application:not(.standalone-exit) .page-col-content { position: fixed !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; padding: 0 !important; margin: 0 !important; overflow: hidden !important; }\n.v-application:not(.standalone-exit) .contents { padding: 0 !important; margin: 0 !important; overflow: hidden !important; height: 100vh !important; }`
             if (pubAllowExit) {
               // Exit mode layout: show slides as scrollable list; page CSS handles colors
               injectCode.css = `${injectCode.css}\n.v-application.standalone-exit .container, .v-application.standalone-exit .container--fluid { width: 100% !important; max-width: 100% !important; }\n.v-application.standalone-exit .reveal-viewport, .v-application.standalone-exit .reveal { position: relative !important; height: auto !important; overflow: visible !important; }\n.v-application.standalone-exit .reveal .slides { position: static !important; width: auto !important; height: auto !important; transform: none !important; }\n.v-application.standalone-exit .reveal .slides > section { position: static !important; display: flow-root !important; width: auto !important; height: auto !important; transform: none !important; opacity: 1 !important; visibility: visible !important; margin-bottom: 24px !important; left: auto !important; top: auto !important; padding: 24px !important; margin-left: 0 !important; margin-right: 0 !important; }\n#fs-toggle-btn { position: fixed !important; bottom: 30px !important; right: 30px !important; z-index: 999999 !important; background: #1976d2 !important; color: #fff !important; border: none !important; border-radius: 24px !important; padding: 12px 24px !important; cursor: pointer !important; font-size: 16px !important; box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important; display: flex !important; align-items: center !important; gap: 8px !important; }`
@@ -629,14 +599,14 @@ router.get('/*', async (req, res, next) => {
             }
           } else {
             // Docs domain: fullscreen toggle button; page CSS handles colors
-            injectCode.css = `${injectCode.css}\n#fs-toggle-btn { position: fixed !important; bottom: 30px !important; right: 30px !important; z-index: 999999 !important; background: #1976d2 !important; color: #fff !important; border: none !important; border-radius: 24px !important; padding: 12px 24px !important; cursor: pointer !important; font-size: 16px !important; box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important; display: flex !important; align-items: center !important; gap: 8px !important; }\n.standalone-fullscreen { position: fixed !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; z-index: 99999 !important; overflow: hidden !important; }\n.standalone-fullscreen .v-toolbar, .standalone-fullscreen header, .standalone-fullscreen nav-header, .standalone-fullscreen .v-navigation-drawer, .standalone-fullscreen .page-header-section, .standalone-fullscreen .v-divider, .standalone-fullscreen .page-edit-fab, .standalone-fullscreen .page-edit-shortcuts, .standalone-fullscreen .nav-footer, .standalone-fullscreen .page-toc-card, .standalone-fullscreen .page-tags-card, .standalone-fullscreen .page-comments-card, .standalone-fullscreen .page-author-card, .standalone-fullscreen .page-shortcuts-card, .standalone-fullscreen .page-col-sd, .standalone-fullscreen .comments-container, .standalone-fullscreen #discussion, .standalone-fullscreen .v-footer { display: none !important; }\n.standalone-fullscreen .reveal-viewport, .standalone-fullscreen .reveal { position: fixed !important; top: 0 !important; left: 0 !important; height: 100vh !important; width: 100vw !important; overflow: hidden !important; }\n.standalone-fullscreen .container, .standalone-fullscreen .container--fluid { width: 100% !important; max-width: 100% !important; padding: 0 !important; margin: 0 !important; }`
+            injectCode.css = `${injectCode.css}\n#fs-toggle-btn { position: fixed !important; bottom: 30px !important; right: 30px !important; z-index: 999999 !important; background: #1976d2 !important; color: #fff !important; border: none !important; border-radius: 24px !important; padding: 12px 24px !important; cursor: pointer !important; font-size: 16px !important; box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important; display: flex !important; align-items: center !important; gap: 8px !important; }\n.standalone-fullscreen { position: fixed !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; z-index: 99999 !important; overflow: hidden !important; }\n.standalone-fullscreen #raw-page-frame { position: fixed !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; z-index: 1 !important; }\n:not(.standalone-fullscreen) #raw-page-frame { position: relative !important; width: 100% !important; height: auto !important; min-height: 80vh !important; z-index: auto !important; }\n.standalone-fullscreen .v-toolbar, .standalone-fullscreen header, .standalone-fullscreen nav-header, .standalone-fullscreen .v-navigation-drawer, .standalone-fullscreen .page-header-section, .standalone-fullscreen .v-divider, .standalone-fullscreen .page-edit-fab, .standalone-fullscreen .page-edit-shortcuts, .standalone-fullscreen .nav-footer, .standalone-fullscreen .page-toc-card, .standalone-fullscreen .page-tags-card, .standalone-fullscreen .page-comments-card, .standalone-fullscreen .page-author-card, .standalone-fullscreen .page-shortcuts-card, .standalone-fullscreen .page-col-sd, .standalone-fullscreen .comments-container, .standalone-fullscreen #discussion, .standalone-fullscreen .v-footer { display: none !important; }\n.standalone-fullscreen .reveal-viewport, .standalone-fullscreen .reveal { position: fixed !important; top: 0 !important; left: 0 !important; height: 100vh !important; width: 100vw !important; overflow: hidden !important; }\n.standalone-fullscreen .container, .standalone-fullscreen .container--fluid { width: 100% !important; max-width: 100% !important; padding: 0 !important; margin: 0 !important; }`
             injectCode.body = `${injectCode.body}\n<button id="fs-toggle-btn" onclick="var el=document.querySelector(\x27.v-application\x27);if(!el)return;var on=!el.classList.contains(\x27standalone-fullscreen\x27);if(on){el.classList.add(\x27standalone-fullscreen\x27);}else{el.classList.remove(\x27standalone-fullscreen\x27);}if(typeof Reveal!==\x27undefined\x27&&Reveal.layout){setTimeout(function(){Reveal.layout()},50);}this.innerHTML=on?\x27&times; Exit\x27:\x27&#9654; Play\x27;" title="Toggle Fullscreen" style="display:flex">&#9654; Play</button>`
           }
         }
         // -> Docs domain: download button for code editor pages (raw HTML/MD)
         if (!isPubDomain && page.editorKey === 'code' && page.localeCode && page.path) {
           const dlUrl = `/_raw/${page.localeCode}/${page.path}`
-          injectCode.css = `${injectCode.css}\n#dl-raw-btn { position: fixed !important; top: 80px !important; right: 20px !important; z-index: 999999 !important; background: #333 !important; color: #fff !important; border: none !important; border-radius: 6px !important; padding: 8px 16px !important; cursor: pointer !important; font-size: 13px !important; box-shadow: 0 2px 6px rgba(0,0,0,0.3) !important; display: flex !important; align-items: center !important; gap: 6px !important; text-decoration: none !important; }\n#dl-raw-btn:hover { background: #555 !important; }`
+          injectCode.css = `${injectCode.css}\n#dl-raw-btn { position: fixed !important; top: 80px !important; right: 20px !important; z-index: 9999999 !important; background: #333 !important; color: #fff !important; border: none !important; border-radius: 6px !important; padding: 8px 16px !important; cursor: pointer !important; font-size: 13px !important; box-shadow: 0 2px 6px rgba(0,0,0,0.3) !important; display: flex !important; align-items: center !important; gap: 6px !important; text-decoration: none !important; }\n#dl-raw-btn:hover { background: #555 !important; }`
           injectCode.body = `${injectCode.body}\n<a id="dl-raw-btn" href="${dlUrl}" title="Download source file">&#8615; Source</a>`
         }
         if (req.query.legacy || (req.get('user-agent') && req.get('user-agent').indexOf('Trident') >= 0)) {
