@@ -589,6 +589,11 @@ router.get('/*', async (req, res, next) => {
           if (extractedStyles.length > 0) {
             injectCode.css = `${injectCode.css}\n${extractedStyles.map(s => s.replace(/<\/?style[^>]*>/gi, '')).join('\n')}`
           }
+          // -> CSS isolation: reset Vuetify inherited properties on content container
+          // 'all: initial' on the wrapper div creates an inheritance barrier — children
+          // inherit from this div (initial values) instead of Vuetify's ancestors.
+          // The page's own extracted <style> rules still apply to inner elements.
+          injectCode.css = `${injectCode.css}\n.contents > div { all: initial !important; display: block !important; width: 100% !important; }\n.page-col-content { background: initial !important; border: none !important; box-shadow: none !important; }`
         }
 
                 // -> Load page tags for standalone detection (keep original page.tags for Vue template)
